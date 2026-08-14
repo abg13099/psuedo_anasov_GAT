@@ -23,7 +23,7 @@ from torch_geometric.nn import (
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch_geometric.utils import to_dense_adj, to_dense_batch
 
-class APPNP(torch.nn.Module):
+class APPNPModel(torch.nn.Module):
     def __init__(
         self,
         num_classes,
