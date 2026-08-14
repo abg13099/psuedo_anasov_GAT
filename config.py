@@ -10,8 +10,8 @@ CONFIG = mlc.ConfigDict(
     {
         "experiment": {
                 "type": ClassificationType.NODE,
-                "datasets": ("Cora", "CiteSeer", "PubMed", "Texas", "Wisconsin", "Cornell", "CS", "Physics", "Actor", "Roman-empire", "Amazon-ratings", "Minesweeper"),
-                "models": ("PAGAT", "GAT", "GCN", "GIN"),
+                "datasets": ("Cora", "CiteSeer", "PubMed", "Texas", "Wisconsin", "Cornell", "CS", "Physics"),
+                "models": ("GPRGNN", "H2GCN", "GCN2", "GREAD"),
         },
         # Diffusion edge weights (used by PAGAT) are tuned per-dataset by
         # diffusion_search.py rather than fixed globally: each dataset gets its

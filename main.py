@@ -265,12 +265,13 @@ def run_node_task(input_dataset, hyperparams, device, results_file, pbar=None):
     if input_dataset not in NODE_DATASET_FAMILY:
         raise ValueError(f"Unknown node classification dataset {input_dataset}")
 
-    diffusion_params = get_diffusion_params(input_dataset, task='node', device=device)
+    if "PA_GAT" in CONFIG.experiment.models:
+        diffusion_params = get_diffusion_params(input_dataset, task='node', device=device)
+        dataset_weighted, _, _ = prepare_node_dataset(
+            root=f'data/Node/weighted/{input_dataset}', name=input_dataset, diffusion_params=diffusion_params)
 
     dataset_unweighted, num_classes, num_features = prepare_node_dataset(
             root=f'data/Node/unweighted/{input_dataset}', name=input_dataset)
-    dataset_weighted, _, _ = prepare_node_dataset(
-            root=f'data/Node/weighted/{input_dataset}', name=input_dataset, diffusion_params=diffusion_params)
 
     for model_name in CONFIG.experiment.models:
         current_data = dataset_weighted if model_name == "PAGAT" else dataset_unweighted
