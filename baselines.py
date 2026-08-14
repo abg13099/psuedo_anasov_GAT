@@ -7,6 +7,7 @@ from torch.nn import BatchNorm1d as BN
 from torch.nn import Linear, ReLU, Sequential
 
 from torch_geometric.nn import (
+        APPNP,
         DenseSAGEConv,
         GATConv,
         GCNConv,
@@ -21,6 +22,53 @@ from torch_geometric.nn import (
         global_mean_pool)
 from torch_geometric.nn.conv.gcn_conv import gcn_norm
 from torch_geometric.utils import to_dense_adj, to_dense_batch
+
+class APPNP(torch.nn.Module):
+    def __init__(
+        self,
+        num_classes,
+        num_features,
+        num_layers,
+        hidden,
+        alpha=0.1,
+        dropout=0.5,
+        regression=False,
+        task_level='graph',
+    ):
+        super().__init__()
+        self.regression = regression
+        self.task_level = task_level
+
+        self.lin1 = Linear(num_features, hidden)
+        self.lin2 = Linear(hidden, num_classes if task_level != 'graph' else hidden)
+
+        self.propagate = APPNP(K=num_layers, alpha=alpha, dropout=dropout)
+
+        self.lin_out = Linear(hidden, num_classes) if task_level == 'graph' else None
+
+    def reset_parameters(self):
+        self.lin1.reset_parameters()
+        self.lin2.reset_parameters()
+        self.propagate.reset_parameters()
+        if self.lin_out is not None:
+            self.lin_out.reset_parameters()
+
+    def forward(self, x, edge_index, batch=None, edge_weight=None):
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = F.relu(self.lin1(x))
+        x = F.dropout(x, p=0.5, training=self.training)
+        x = self.lin2(x)
+
+        x = self.propagate(x, edge_index, edge_weight)
+
+        if self.task_level == 'graph':
+            x = global_mean_pool(x, batch)
+            x = self.lin_out(x)
+
+        return x if self.regression else F.log_softmax(x, dim=-1)
+
+    def __repr__(self):
+        return self.__class__.__name__
 
 class Block(torch.nn.Module):
     def __init__(self, in_channels, hidden_channels, out_channels, mode='cat'):

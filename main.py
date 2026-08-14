@@ -16,7 +16,7 @@ from utils import set_seed, k_fold
 from diffusion_search import get_diffusion_params
 from pA_GAT import train_graph, test_graph, train_node, test_node, WeightedGATGraphNet
 from dataset_loader import prepare_node_dataset, prepare_graph_dataset, NODE_DATASET_FAMILY
-from baselines import DiffPool, GAT, GCN, GCN2, GIN, GraphSAGE, GPRGNN, H2GCN, GREAD, GraphGPS 
+from baselines import APPNP, DiffPool, GAT, GCN, GCN2, GIN, GraphSAGE, GPRGNN, H2GCN, GREAD, GraphGPS 
 from itertools import product
 
 def get_model(model_name, num_features, num_classes, max_nodes, hidden_dim, num_layers, dropout_rate, regression=False, task_level='graph'):
@@ -32,6 +32,15 @@ def get_model(model_name, num_features, num_classes, max_nodes, hidden_dim, num_
             regression=regression,
             task_level=task_level
             )
+    elif model_name == "APPNP":
+        return APPNP(
+                num_features=num_features,
+                num_classes=num_classes,
+                num_layers=num_layers,
+                hidden=hidden_dim,
+                regression=regression,
+                task_level=task_level
+                )
     elif model_name == "GAT":
         return GAT(
                 num_features=num_features,
