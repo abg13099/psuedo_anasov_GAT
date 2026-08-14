@@ -5,7 +5,8 @@ from torch_geometric.utils import softmax
 from community import community_louvain as co_louvain
 import random
 from torch_geometric.datasets import TUDataset
-from torch_geometric.datasets import ZINC 
+from torch_geometric.datasets import ZINC
+from torch_geometric.datasets import Planetoid, WebKB, Coauthor, Actor, HeterophilousGraphDataset
 from ogb.graphproppred import PygGraphPropPredDataset
 from torch_geometric.loader import DataLoader
 from torch_geometric.utils import to_networkx
@@ -13,6 +14,7 @@ from sklearn.model_selection import StratifiedKFold
 from sklearn.cluster import SpectralClustering
 from networkx.algorithms import community
 from scipy.linalg import eigh
+from scipy.sparse import coo_matrix
 from itertools import product
 
 def extract_largest_connected_component(data):
@@ -73,7 +75,11 @@ def build_block_operator_D(G_nx, communities, alpha=0.2, base_anisotropy_c=1, be
     nodes_list = list(G_nx.nodes())
     node_to_idx = {v: i for i, v in enumerate(nodes_list)}
 
-    D = np.zeros((n, n), dtype=float)
+    # D is built as sparse triplets rather than a dense n x n array: for
+    # large single-graph node classification datasets (tens of thousands of
+    # nodes) a dense matrix would need several GB, while the actual nonzero
+    # entries are confined to per-community blocks plus inter-community edges.
+    D_rows, D_cols, D_vals = [], [], []
 
     # Storage for Option 1
     comm_us = {}          # cid -> unstable eigenvector (block-local indexing)
@@ -141,7 +147,9 @@ def build_block_operator_D(G_nx, communities, alpha=0.2, base_anisotropy_c=1, be
         # ---- Insert block into D ----
         for ii, vi in enumerate(idx):
             for jj, vj in enumerate(idx):
-                D[vi, vj] = D_block[ii, jj]
+                D_rows.append(vi)
+                D_cols.append(vj)
+                D_vals.append(D_block[ii, jj])
 
     # ----------------- Inter-community edges (Option 1) -----------------
 
@@ -180,45 +188,50 @@ def build_block_operator_D(G_nx, communities, alpha=0.2, base_anisotropy_c=1, be
 
         iu = node_to_idx[u_node]
         iv = node_to_idx[v_node]
-        D[iu, iv] += w
-        D[iv, iu] += w   # symmetric
+        D_rows.append(iu); D_cols.append(iv); D_vals.append(w)
+        D_rows.append(iv); D_cols.append(iu); D_vals.append(w)   # symmetric
 
+    D = coo_matrix((D_vals, (D_rows, D_cols)), shape=(n, n)).tocsr()
     return D, node_to_idx, nodes_list
 
 
 # ------------------- Attach weights from D -------------------
 def attach_weights_from_D(data, D, node_to_idx, nodes_list, clip_negative=True, add_self_loop=True):
-    W = 0.5 * (D + D.T)
+    W = (D + D.T).tocsr()
+    W.data *= 0.5
     if clip_negative:
-        W[W < 0] = 0.0
+        W.data[W.data < 0] = 0.0
+        W.eliminate_zeros()
 
     edge_index = data.edge_index.cpu().numpy()
-    num_edges = edge_index.shape[1]
-    edge_weights = np.zeros(num_edges, dtype=float)
-
-    for eidx in range(num_edges):
-        u = int(edge_index[0, eidx])
-        v = int(edge_index[1, eidx])
-        iu, iv = node_to_idx[u], node_to_idx[v]
-        edge_weights[eidx] = W[iu, iv]
+    # node_to_idx maps original node ids -> position in the (community-detection)
+    # adjacency; idx_map lets us go from a node id straight to that position.
+    idx_map = np.array([node_to_idx[node] for node in range(data.num_nodes)])
+    iu = idx_map[edge_index[0]]
+    iv = idx_map[edge_index[1]]
+    edge_weights = np.asarray(W[iu, iv]).flatten()
 
     data.edge_weight = torch.tensor(edge_weights, dtype=torch.float)
 
     if add_self_loop:
-        u_list, v_list = data.edge_index[0].tolist(), data.edge_index[1].tolist()
-        w_list = data.edge_weight.tolist()
-        diag = np.diag(W)
+        diag = np.asarray(W.diagonal()).flatten()[idx_map]
+
+        u_arr, v_arr = edge_index[0], edge_index[1]
+        is_self_loop = (u_arr == v_arr)
+        # position of each node's existing self-loop edge (if any), else -1
+        self_loop_pos = -np.ones(data.num_nodes, dtype=np.int64)
+        self_loop_pos[u_arr[is_self_loop]] = np.nonzero(is_self_loop)[0]
+
+        u_list, v_list, w_list = u_arr.tolist(), v_arr.tolist(), edge_weights.tolist()
         for node in range(data.num_nodes):
-            exists = False
-            for j, (uu, vv) in enumerate(zip(u_list, v_list)):
-                if uu == node and vv == node:
-                    w_list[j] = diag[node]
-                    exists = True
-                    break
-            if not exists:
+            pos = self_loop_pos[node]
+            if pos >= 0:
+                w_list[pos] = float(diag[node])
+            else:
                 u_list.append(node)
                 v_list.append(node)
                 w_list.append(float(diag[node]))
+
         data.edge_index = torch.tensor([u_list, v_list], dtype=torch.long)
         data.edge_weight = torch.tensor(w_list, dtype=torch.float)
 
@@ -329,13 +342,98 @@ def prepare_zinc_dataset(name, root='data/ZINC', subset=True,diffusion_params=No
 
     return processed, num_classes, num_features, splits
 
+def prepare_graph_dataset(name, diffusion_params=None):
+    """Routes a graph classification/regression dataset name to its loader.
+
+    `root` only controls where the raw/processed graph structure is cached on
+    disk (independent of diffusion_params, which are applied in-memory after
+    loading), so unweighted and diffusion-weighted calls intentionally share
+    the same weighted/unweighted root regardless of caller (a fixed grid run
+    or a diffusion-parameter search trial).
+
+    Returns (dataset, num_classes, num_features, splits, generate_splits, regression).
+    `splits` is None when generate_splits is True (caller should build it via k_fold).
+    """
+    weighted = diffusion_params is not None
+    if name == 'ZINC':
+        root = f'data/ZINC/{"weighted" if weighted else "unweighted"}'
+        dataset, num_classes, num_features, splits = prepare_zinc_dataset(root=root, name=name, diffusion_params=diffusion_params)
+        return dataset, num_classes, num_features, splits, False, True
+    elif "ogbg" in name:
+        root = f'data/OBG/{"weighted" if weighted else "unweighted"}'
+        dataset, num_classes, num_features, splits = prepare_ogb_dataset(root=root, name=name, diffusion_params=diffusion_params)
+        return dataset, num_classes, num_features, splits, False, False
+    else:
+        root = f'data/TU/{"weighted" if weighted else "unweighted"}'
+        dataset, num_classes, num_features = prepare_tu_dataset(root=root, name=name, diffusion_params=diffusion_params)
+        return dataset, num_classes, num_features, None, True, False
+
+NODE_DATASET_FAMILY = {
+    "Cora": "Planetoid", "CiteSeer": "Planetoid", "PubMed": "Planetoid",
+    "Cornell": "WebKB", "Texas": "WebKB", "Wisconsin": "WebKB",
+    "CS": "Coauthor", "Physics": "Coauthor",
+    "Actor": "Actor",
+    "Roman-empire": "Heterophilous", "Amazon-ratings": "Heterophilous",
+    "Minesweeper": "Heterophilous", "Tolokers": "Heterophilous", "Questions": "Heterophilous",
+}
+
+def random_node_split(num_nodes, seed=42, train_ratio=0.6, val_ratio=0.2):
+    generator = torch.Generator().manual_seed(seed)
+    perm = torch.randperm(num_nodes, generator=generator)
+    train_end = int(train_ratio * num_nodes)
+    val_end = train_end + int(val_ratio * num_nodes)
+
+    train_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    val_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    test_mask = torch.zeros(num_nodes, dtype=torch.bool)
+    train_mask[perm[:train_end]] = True
+    val_mask[perm[train_end:val_end]] = True
+    test_mask[perm[val_end:]] = True
+    return train_mask, val_mask, test_mask
+
+def prepare_node_dataset(name, root='data/Node', diffusion_params=None, split_idx=0):
+    family = NODE_DATASET_FAMILY.get(name)
+    if family == "Planetoid":
+        dataset = Planetoid(root=root, name=name)
+    elif family == "WebKB":
+        dataset = WebKB(root=root, name=name)
+    elif family == "Coauthor":
+        dataset = Coauthor(root=root, name=name)
+    elif family == "Actor":
+        dataset = Actor(root=root)
+    elif family == "Heterophilous":
+        dataset = HeterophilousGraphDataset(root=root, name=name)
+    else:
+        raise ValueError(f"Unknown node classification dataset {name}")
+
+    data = dataset[0]
+    num_classes = dataset.num_classes
+    num_features = dataset.num_features
+
+    if not hasattr(data, 'train_mask') or data.train_mask is None:
+        # Coauthor ships no split; carve out a random 60/20/20 split.
+        data.train_mask, data.val_mask, data.test_mask = random_node_split(data.num_nodes)
+    elif data.train_mask.dim() == 2:
+        # WebKB / Actor ship 10 geom-gcn splits as columns; pick one.
+        data.train_mask = data.train_mask[:, split_idx]
+        data.val_mask = data.val_mask[:, split_idx]
+        data.test_mask = data.test_mask[:, split_idx]
+
+    if diffusion_params:
+        try:
+            data, _ = compute_diffused_laplacian_weights(data, **diffusion_params)
+        except Exception as e:
+            print(f"Error when computing diffused laplacian: {e}")
+
+    return data, num_classes, num_features
+
 def prepare_ogb_dataset(name, root='data/OGB', diffusion_params=None):
     dataset = PygGraphPropPredDataset(name=name, root=root)
 
     split_idx = dataset.get_idx_split()
     train_indices = split_idx["train"]
     val_indices = split_idx["val"]
-    test_indices = test_idx["test"]
+    test_indices = split_idx["test"]
 
     num_classes = dataset.num_classes
     num_features = dataset.num_features

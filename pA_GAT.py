@@ -89,11 +89,13 @@ class WeightedGATConv(MessagePassing):
 
 # ------------------- Weighted GAT GraphNet -------------------
 class WeightedGATGraphNet(nn.Module):
-    def __init__(self, in_dim, hidden_dim=64, num_layers=2, num_classes=7, dropout_rate=0.5, heads=4):
+    def __init__(self, in_dim, hidden_dim=64, num_layers=2, num_classes=7, dropout_rate=0.5, heads=4, regression=False, task_level='graph'):
         super().__init__()
 
         self.convs, self.bns, self.dropout = nn.ModuleList(), nn.ModuleList(), nn.Dropout(dropout_rate)
         self.heads = heads
+        self.regression = regression
+        self.task_level = task_level
 
         for i in range(num_layers):
             in_ch = in_dim if i == 0 else hidden_dim * heads
@@ -102,7 +104,7 @@ class WeightedGATGraphNet(nn.Module):
 
         self.classifier = nn.Linear(hidden_dim * heads, num_classes)
 
-    def forward(self, x, edge_index, batch, edge_weight=None):
+    def forward(self, x, edge_index, batch=None, edge_weight=None):
         if edge_weight is not None:
             edge_weight = softmax(edge_weight, edge_index[0])
         for i, conv in enumerate(self.convs):
@@ -110,8 +112,10 @@ class WeightedGATGraphNet(nn.Module):
             x = self.bns[i](x)
             x = F.elu(x)
             x = self.dropout(x)
-        x = global_mean_pool(x, batch)
-        return F.log_softmax(self.classifier(x), dim=1)
+        if self.task_level == 'graph':
+            x = global_mean_pool(x, batch)
+        x = self.classifier(x)
+        return x if self.regression else F.log_softmax(x, dim=1)
 
 # ------------------- Training & Evaluation -------------------
 def train_graph(model, loader, optimizer, device, task_type='classification'):
@@ -124,10 +128,9 @@ def train_graph(model, loader, optimizer, device, task_type='classification'):
 
         if task_type == 'classification':
             loss = F.nll_loss(out, batch.y)
-            loss.backward()
-        else: 
-            loss = F.mse_loss(out.squeeze, batch.y)
-            loss.backward()
+        else:
+            loss = F.mse_loss(out.squeeze(), batch.y.float())
+        loss.backward()
 
         optimizer.step()
         total_loss += loss.item()
@@ -150,8 +153,31 @@ def test_graph(model, loader, device, task_type='classification'):
             else:
                 error = (out.squeeze() - batch.y.float()).abs().sum().item()
                 score += error
+                total += batch.y.size(0)
     if task_type == 'classification':
-        return correct/total 
+        return correct/total
     else:
-        return 
+        return score/total
+
+def train_node(model, data, optimizer, device):
+    model.train()
+    data = data.to(device)
+    optimizer.zero_grad()
+    edge_weight = data.edge_weight if hasattr(data, 'edge_weight') else None
+    out = model(data.x, data.edge_index, batch=None, edge_weight=edge_weight)
+    loss = F.nll_loss(out[data.train_mask], data.y[data.train_mask])
+    loss.backward()
+    optimizer.step()
+    return loss.item()
+
+def test_node(model, data, device, mask_name='val_mask'):
+    model.eval()
+    data = data.to(device)
+    edge_weight = data.edge_weight if hasattr(data, 'edge_weight') else None
+    with torch.no_grad():
+        out = model(data.x, data.edge_index, batch=None, edge_weight=edge_weight)
+        mask = getattr(data, mask_name)
+        pred = out.argmax(dim=1)
+        correct = pred[mask].eq(data.y[mask]).sum().item()
+    return correct / mask.sum().item()
 
