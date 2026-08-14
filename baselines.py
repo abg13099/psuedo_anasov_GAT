@@ -459,20 +459,20 @@ class GREADStep(MessagePassing):
 class GREAD(nn.Module):
     def __init__(
         self,
-        in_channels: int,
-        hidden_channels: int,
-        out_channels: int,
-        num_steps: int = 10,
+        num_features,
+        hidden,
+        num_classes,
+        num_layers,
         step_size: float = 0.1,
         alpha: float = 1.0,
         beta: float = 1.0,
         dropout: float = 0.5
     ):
         super().__init__()
-        self.encoder = nn.Linear(in_channels, hidden_channels)
-        self.decoder = nn.Linear(hidden_channels, out_channels)
+        self.encoder = nn.Linear(num_features, hidden)
+        self.decoder = nn.Linear(hidden, num_classes)
         self.step = GREADStep(alpha=alpha, beta=beta, step_size=step_size)
-        self.num_steps = num_steps
+        self.num_layers= num_layers
         self.dropout = dropout
 
     def forward(self, x: torch.Tensor, edge_index: torch.Tensor) -> torch.Tensor:
@@ -484,7 +484,7 @@ class GREAD(nn.Module):
         h = F.relu(h)
         h = F.dropout(h, p=self.dropout, training=self.training)
 
-        for _ in range(self.num_steps):
+        for _ in range(self.num_layers):
             h = self.step(h, edge_index_norm, edge_weight)
 
         h = F.dropout(h, p=self.dropout, training=self.training)

@@ -16,7 +16,7 @@ from utils import set_seed, k_fold
 from diffusion_search import get_diffusion_params
 from pA_GAT import train_graph, test_graph, train_node, test_node, WeightedGATGraphNet
 from dataset_loader import prepare_node_dataset, prepare_graph_dataset, NODE_DATASET_FAMILY
-from baselines import DiffPool, GAT, GCN, GIN, GraphSAGE
+from baselines import DiffPool, GAT, GCN, GCN2, GIN, GraphSAGE, GPRGNN, H2GCN, GREAD, GraphGPS 
 from itertools import product
 
 def get_model(model_name, num_features, num_classes, max_nodes, hidden_dim, num_layers, dropout_rate, regression=False, task_level='graph'):
@@ -68,6 +68,15 @@ def get_model(model_name, num_features, num_classes, max_nodes, hidden_dim, num_
             regression=regression,
             task_level=task_level
             )
+    elif model_name == "GCN2":
+        return GCN2(
+            num_features=num_features,
+            num_classes=num_classes,
+            num_layers=num_layers,
+            hidden=hidden_dim,
+            regression=regression,
+            task_level=task_level
+            )
     elif model_name == "DiffPool":
         return DiffPool(
             in_dim=num_features, num_classes=num_classes,
@@ -75,6 +84,38 @@ def get_model(model_name, num_features, num_classes, max_nodes, hidden_dim, num_
             max_nodes=max_nodes, ratio=0.25,
             regression=regression
             )
+    elif model_name == "GPRGNN":
+        return GPRGNN(
+                num_classes=num_classes,
+                num_features=num_features,
+                num_layers=num_layers,
+                hidden=hidden_dim,
+                regression=regression,
+                task_level=task_level
+                )
+    elif model_name == "H2GCN":
+        return H2GCN(
+                num_classes=num_classes,
+                num_features=num_features,
+                num_layers=num_layers,
+                hidden=hidden_dim,
+                regression=regression,
+                task_level=task_level
+                )
+    elif model_name == "GREAD":
+        return GREAD(
+                num_classes=num_classes,
+                num_features=num_features,
+                num_layers=num_layers,
+                hidden=hidden_dim
+                )
+    elif model_name == "GraphGPS":
+        return GraphGPS(
+                num_classes=num_classes,
+                num_features=num_features,
+                num_layers=num_layers,
+                hidden=hidden_dim
+                )
     else:
         raise ValueError(f"Unknown model {model_name}")
 
