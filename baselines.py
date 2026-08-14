@@ -475,7 +475,7 @@ class GREAD(nn.Module):
         self.num_layers= num_layers
         self.dropout = dropout
 
-    def forward(self, x, edge_index, batch=None):
+    def forward(self, x, edge_index, batch=None, edge_weight=None):
         edge_index_norm, edge_weight = gcn_norm(
             edge_index, num_nodes=x.size(0), add_self_loops=False
         )
